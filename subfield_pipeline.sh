@@ -51,4 +51,5 @@ antsRegistration --dimensionality 3 --float 0 \
 
 cd $TESTING_FOLDER/scripts
 
-./hippocapal_seg_script `../temp/$FOLDER` `../temp/T2.nii.gz` 'Analysis'
+./hippocapal_seg_script `../temp/$FOLDER` `../temp/T2.nii.gz` 'Analysis T1T2'
+./hippocapal_seg_scriptT2 `../temp/$FOLDER` `../temp/T2.nii.gz` 'Analysis T2'
