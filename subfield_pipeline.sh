@@ -1,55 +1,75 @@
-#!/bash/bash
+#!/bin/bash
 
 #Johnny Rao 04.29.19
 #Hippocampal Subfield Segmentation Script Pipeline
 
 RAW_DATA="/space/md18/3/data/MMILDB/EPIPROJ/EPDTI/Containers/"
 FSURF_DATA="/space/md18/3/data/MMILDB/EPIPROJ/FSRECONS/"
-TESTING_FOLDER="/space/syn09/1/data/MMILDB/ABALA/Hippocampal_Subfields/"
+TESTING_FOLDER=$FSURF_DATA
+SCRIPT_FOLDER=${TESTING_FOLDER}/scripts/
 
-FOLDER="ls | grep $1"
+echo $1
 
-if [ $FOLDER == '' ]; then
+[ $(ls $RAW_DATA | grep -c $1) -gt 1 ] &&
+	(echo "Multiple matches found! Exiting..." && exit 1)
+
+FOLDER=$(ls $RAW_DATA | grep $1)
+
+echo $FOLDER
+if [ -z "$FOLDER" ]; then
 	echo "Can't find patient folder"
 	exit 1
 fi
 
 cd ${RAW_DATA}${FOLDER}
 
-SERIES=$(Rscript -e get_raw_folder.R $FOLDER)
+SERIES=$(Rscript ${SCRIPT_FOLDER}/get_folder.R ${RAW_DATA}${FOLDER}/SeriesInfo.csv)
 
-cp -r ${RAW_DATA}${FOLDER}${SERIES} ${TESTING_FOLDER}temp/raw
+echo "T2 dicoms folder is: $FOLDER/$SERIES"
 
-cd ${TESTING_FOLDER}temp
+# make all the folders
+fsurf_dir=FSURF_${FOLDER#MRIRAW_}
+mkdir -p ${TESTING_FOLDER}/${fsurf_dir}/temp/raw
 
-dcm2niix raw
+# copy dcms
+echo "Copying T2 dicoms..."
+rsync -rL ${RAW_DATA}/${FOLDER}/${SERIES}/* ${fsurf_dir}/temp/raw
 
-cp -r $FSURF_DATA$FOLDER $TESTING_FOLDER'temp'
+#echo "Copying FSRECON..."
+# copy freesurfer stuff
+#rsync -rL ${FSURF_DATA}/FSURF_${FOLDER#MRIRAW_}/* ${TESTING_FOLDER}/data/temp
 
-mv *.nii.gz T2.nii.gz
+cd ${fsurf_dir}
 
-template="T2.nii.gz"
-t1brain=T1.mgz
+echo "Converting dicom to nifti..."
+# convert T2 dicoms to nifti (gz)
+dcm2niix -f "%p" -z i raw
 
-antsRegistration --dimensionality 3 --float 0 \
-    --output [$TESTING_FOLDER'temp'/Template_to_${sub}_, \
-	$TESTING_FOLDER'temp'/pennTemplate_to_${sub}_Warped.nii.gz] \
-    --interpolation Linear \
-    --winsorize-image-intensities [0.005,0.995] \
-    --use-histogram-matching 0 \
-    --initial-moving-transform [$t1brain,$template,1] \
-    --transform Rigid[0.1] \
-    --metric MI[$t1brain,$template,1,32,Regular,0.25] \
-    --convergence [1000x500x250x100,1e-6,10] \
-    --shrink-factors 8x4x2x1 \
-    --smoothing-sigmas 3x2x1x0vox \
-    --transform Affine[0.1] \
-    --metric MI[$t1brain,$template,1,32,Regular,0.25] \
-    --convergence [1000x500x250x100,1e-6,10] \
-    --shrink-factors 8x4x2x1 \
-    --smoothing-sigmas 3x2x1x0vox \
+mv $(ls raw/FSE_T2_GOOD.nii.gz) raw/T2.nii.gz
 
-cd $TESTING_FOLDER/scripts
+echo "Skull stripping T2..."
+# run robex
+cd raw
+${HOME}/Desktop/ROBEX/runROBEX.sh T2.nii.gz T2_stripped.nii.gz T2_mask.nii.gz
+mri_convert --in_orientation LSP --out_orientation LIA T2_stripped.nii.gz T2_stripped.nii.gz
+mri_convert --in_orientation LIA --out_orientation LIA ../mri/brainmask.mgz brainmask.nii.gz
 
-./hippocapal_seg_script `../temp/$FOLDER` `../temp/T2.nii.gz` 'Analysis T1T2'
-./hippocapal_seg_scriptT2 `../temp/$FOLDER` `../temp/T2.nii.gz` 'Analysis T2'
+template=${fsurf_dir}/temp/raw/T2_stripped.nii.gz
+t1brain=${fsurf_dir}/temp/raw/brainmask.nii.gz
+
+printf "MOVING: %s\n" $template
+printf "REFERENCE: %s\n" $t1brain
+
+flirt -in $template\
+	-ref $t1brain\
+	-out ${template%_stripped.nii.gz}_deformed.nii.gz\
+	-noresample\
+	-omat ${fsurf_dir}/temp/t2_to_t1.mat\
+	-usesqform\
+	-cost mutualinfo\
+	-searchcost mutualinfo
+
+cd $SCRIPT_FOLDER
+
+./hippocampal_seg_script.sh temp ${fsurf_dir}/temp/raw/T2_deformed.nii.gz T1T2 20
+#./hippocampal_seg_scriptT2.sh temp ${TESTING_FOLDER}/data/temp/raw/T2_stripped.nii.gz T2 30
